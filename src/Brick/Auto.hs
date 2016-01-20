@@ -36,6 +36,7 @@ import Control.Auto
 import Control.Auto.Blip.Internal
 import Control.Auto.Switch
 import Control.Monad.IO.Class
+import Prelude hiding (id)
 
 import qualified Brick        as Brick
 import qualified Graphics.Vty as Vty
@@ -45,7 +46,10 @@ type Handler s e = Auto EventM e (Maybe s)
 
 -- | The "return type" of an event handler; what to do next after handling an
 -- event. May be 'continue', 'next', or 'halt'.
-newtype Next s e = Next (Maybe (s, Maybe (s -> Handler s e)))
+data Next s e
+    = Continue s
+    | Next s (s -> Handler s e)
+    | Halt
 
 data App s e = App
     { appDraw         :: s -> [Brick.Widget]
@@ -53,31 +57,34 @@ data App s e = App
     , appHandler      :: s -> Handler s e
     , appStartEvent   :: s -> EventM s
     , appAttrMap      :: s -> Brick.AttrMap
-    , appLiftVtyEvent :: Vty.Event -> e
+    , appLiftVtyEvent :: Vty.Event -> Maybe e
     }
 
-defaultMain :: forall s. App s Vty.Event -> s -> IO s
+defaultMain :: forall s e. App s e -> s -> IO s
 defaultMain App{..} s0 = fst <$> Brick.defaultMain app' (s0, appHandler s0)
   where
-    app' :: Brick.App (s, Auto EventM Vty.Event (Maybe s)) Vty.Event
+    app' :: Brick.App (s, Auto EventM e (Maybe s)) Vty.Event
     app' = Brick.App
         { Brick.appDraw         = \(s, _) -> appDraw s
         , Brick.appChooseCursor = \(s, _) cs -> appChooseCursor s cs
         , Brick.appHandleEvent  = handle_event
         , Brick.appStartEvent   = \(s, auto) -> let EventM action = appStartEvent s in (, auto) <$> action
         , Brick.appAttrMap      = \(s, _) -> appAttrMap s
-        , Brick.appLiftVtyEvent = appLiftVtyEvent
+        , Brick.appLiftVtyEvent = id
         }
 
     handle_event
-        :: (s, Auto EventM Vty.Event (Maybe s))
+        :: (s, Auto EventM e (Maybe s))
         -> Vty.Event
-        -> Brick.EventM (Brick.Next (s, Auto EventM Vty.Event (Maybe s)))
-    handle_event (s, auto) e = do
-        let EventM action = stepAuto auto e
-        action >>= \case
-            (Nothing, auto') -> Brick.halt (s, auto')
-            (Just s', auto') -> Brick.continue (s', auto')
+        -> Brick.EventM (Brick.Next (s, Auto EventM e (Maybe s)))
+    handle_event (s, auto) vty_event = do
+        case appLiftVtyEvent vty_event of
+            Nothing -> Brick.continue (s, auto)
+            Just e  -> do
+                let EventM action = stepAuto auto e
+                action >>= \case
+                    (Nothing, auto') -> Brick.halt (s, auto')
+                    (Just s', auto') -> Brick.continue (s', auto')
 
 -- | Create a 'Handler' from its step function and initial state.
 handler :: forall s e. (s -> e -> EventM (Next s e)) -> s -> Handler s e
@@ -88,21 +95,21 @@ handler step state0 = switchFrom_ (accumM_ step' (Just state0, NoBlip))
     step' (Just st, _) evt = f <$> step st evt
       where
         f :: Next s e -> (Maybe s, Blip (Handler s e))
-        f (Next (Just (st', Just k)))  = (Just st', Blip (k st'))
-        f (Next (Just (st', Nothing))) = (Just st', NoBlip)
-        f (Next Nothing)               = (Nothing, NoBlip)
+        f (Continue st') = (Just st', NoBlip)
+        f (Next st' k)   = (Just st', Blip (k st'))
+        f Halt           = (Nothing, NoBlip)
 
 -- | Proceed with the current handler.
 continue :: s -> EventM (Next s e)
-continue st = pure (Next (Just (st, Nothing)))
+continue st = pure (Continue st)
 
 -- | Transition to a new handler just after emitting the given state.
 next :: s -> (s -> Handler s e) -> EventM (Next s e)
-next st k = pure (Next (Just (st, Just k)))
+next st k = pure (Next st k)
 
 -- | Halt event handling.
 halt :: EventM (Next s e)
-halt = pure (Next Nothing)
+halt = pure Halt
 
 --------------------------------------------------------------------------------
 -- Misc. boilerplate that will go away when EventM is made a newtype.

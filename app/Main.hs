@@ -1,5 +1,7 @@
+{-# LANGUAGE LambdaCase                 #-}
 {-# LANGUAGE RecordWildCards            #-}
 {-# LANGUAGE OverloadedStrings          #-}
+{-# LANGUAGE PatternSynonyms            #-}
 {-# LANGUAGE TemplateHaskell            #-}
 
 module Main where
@@ -19,6 +21,7 @@ import Data.List              (intersperse)
 import Data.Maybe
 import Data.Text              (Text)
 import Data.Text.Markup
+import Graphics.Vty           (Key(..))
 import Prelude                hiding ((.), id)
 import Reddit
 import Reddit.Types.Listing
@@ -31,7 +34,7 @@ import qualified Graphics.Vty         as Vty
 import qualified Reddit.Types.Comment as Comment
 import qualified Reddit.Types.Post    as Post
 
-type Event = Vty.Event
+type Event = Key
 
 data Viewing
     = ViewingPosts    -- Viewing subreddit posts
@@ -68,7 +71,7 @@ main :: IO ()
 main = void (defaultMain redditApp initialState)
   where
     redditApp :: App AppState Event
-    redditApp = App draw chooseCursor editorHandler pure (const def) id
+    redditApp = App draw chooseCursor editorHandler pure (const def) eventToKey
 
     draw :: AppState -> [Widget]
     draw AppState{..} =
@@ -86,7 +89,9 @@ main = void (defaultMain redditApp initialState)
                     ViewingPosts    -> renderList _appPosts    drawPost
                     ViewingComments -> renderList _appComments drawComment
                 <=>
-                renderEditor _appEditor
+                case _appSelected of
+                    SelectedEditor -> txt "/r/" <+> renderEditor _appEditor
+                    SelectedList   -> emptyWidget
                 <=>
                 footer
         in case _appError of
@@ -94,7 +99,9 @@ main = void (defaultMain redditApp initialState)
                Nothing  -> [widget]
       where
         drawPost :: Bool -> Post -> Widget
-        drawPost is_selected post = str (printf "%4d  " (Post.score post)) <+> markup (Post.title post @@ title_markup)
+        drawPost is_selected post =
+            str (printf "%4d  " (Post.score post)) <+>
+            markup (Post.title post @@ title_markup)
           where
             title_markup =
                 if is_selected && _appSelected == SelectedList
@@ -113,19 +120,19 @@ main = void (defaultMain redditApp initialState)
         footer = mkFooter $
             case (_appSelected, _appViewing, n) of
                 (SelectedEditor, ViewingPosts, 0) ->
-                    [legend "esc q" "quit", legend "/abc" "subreddit"]
+                    [legend "esc" "quit", legend "abc" "subreddit"]
                 (SelectedEditor, ViewingPosts, _) ->
-                    [legend "esc q" "quit", legend "/abc" "subreddit", legend "tab" "posts"]
+                    [legend "esc" "quit", legend "abc" "subreddit", legend "tab" "posts"]
                 (SelectedEditor, ViewingComments, 0) ->
-                    [legend "esc" "back", legend "/abc" "subreddit"]
+                    [legend "esc" "back", legend "abc" "subreddit"]
                 (SelectedEditor, ViewingComments, _) ->
-                    [legend "esc" "back", legend "/abc" "subreddit", legend "tab" "comments"]
+                    [legend "esc" "back", legend "abc" "subreddit", legend "tab" "comments"]
                 (SelectedList, ViewingPosts, 0) ->
-                    [legend "esc" "quit", legend "tab /" "subreddit", legend "r" "refresh"]
+                    [legend "esc" "quit", legend "tab" "subreddit", legend "r" "refresh"]
                 (SelectedList, ViewingPosts, _) ->
-                    [legend "esc" "quit", legend "tab /" "subreddit", legend "r" "refresh", legend "enter l ⇨ " "comments"]
+                    [legend "esc" "quit", legend "tab" "subreddit", legend "r" "refresh", legend "enter" "comments"]
                 (SelectedList, ViewingComments, _) ->
-                    [legend "esc h ⇦ " "back", legend "tab /" "subreddit", legend "r" "refresh"]
+                    [legend "esc h ⇦ " "back", legend "tab" "subreddit", legend "r" "refresh"]
           where
             n = case _appViewing of
                     ViewingPosts    -> _appPosts^.listElementsL.to V.length
@@ -150,88 +157,91 @@ main = void (defaultMain redditApp initialState)
             SelectedEditor -> Just c
             SelectedList   -> Nothing
 
+    eventToKey :: Vty.Event -> Maybe Key
+    eventToKey (Vty.EvKey key _) = Just key
+    eventToKey _ = Nothing
+
 editorHandler :: AppState -> Handler AppState Event
 editorHandler = handler step
   where
     step :: AppState -> Event -> EventM (Next AppState Event)
-    step st ev
-        | ev `isKey` Vty.KEsc = halt
-        | ev `isKey` Vty.KEnter = do
-            let msubreddit = T.pack (concat (getEditContents (st^.appEditor)))
-            case T.uncons msubreddit of
-                Just ('/', subreddit) -> do
-                    result <- liftIO (runRedditAnon (getPosts' (Options Nothing (Just 20)) Hot (Just (R subreddit))))
-                    case result of
-                        Left err ->
-                            let error_st = st & appError  .~ Just (show err)
-                                next_st  = st & appEditor %~ applyEdit clearEditor
-                                              & appError  .~ Nothing
-                            in next error_st (errorDialogHandler next_st editorHandler)
-                        Right listing -> do
-                            let posts = V.fromList (contents listing)
-                                st' = st & appBreadcrumbs         .~ Just (subreddit, Nothing)
-                                         & appPosts.listElementsL .~ posts
-                                         & appPosts.listSelectedL .~ (if V.null posts then Nothing else Just 0)
-                                         & appEditor              %~ applyEdit clearEditor
-                                         & appSelected            .~ SelectedList
-                            next st' postsHandler
+    step _  KEsc = halt
+    step st KEnter = do
+        let subreddit =
+                case T.pack (concat (getEditContents (st^.appEditor))) of
+                    "" -> "all"
+                    x  -> x
 
-                _ ->
-                    let error_st = st & appError    .~ Just ("Bad subreddit: '" ++ T.unpack msubreddit ++ "'")
-                        next_st  = st & appEditor   %~ applyEdit clearEditor
-                                      & appError    .~ Nothing
-                                      & appSelected .~ SelectedList
-                    in next error_st (errorDialogHandler next_st editorHandler)
-        | ev `isKey` Vty.KChar '\t' = do
-            let st' = st & appSelected .~ SelectedList
-            next st' postsHandler
-        | otherwise = do
-            ed' <- handleEvent ev (st^.appEditor)
-            continue (st & appEditor .~ ed')
+        result <- liftIO (runRedditAnon
+                              (getPosts'
+                                   (Options Nothing (Just 20))
+                                   Hot
+                                   (Just (R subreddit))))
+        case result of
+            Left err ->
+                let error_st = st & appError  .~ Just (show err)
+                    next_st  = st & appEditor %~ applyEdit clearEditor
+                                  & appError  .~ Nothing
+                in next error_st (errorDialogHandler next_st editorHandler)
+            Right listing -> do
+                let posts = V.fromList (contents listing)
+                    st' = st & appBreadcrumbs         .~ Just (subreddit, Nothing)
+                             & appPosts.listElementsL .~ posts
+                             & appPosts.listSelectedL .~ (if V.null posts then Nothing else Just 0)
+                             & appEditor              %~ applyEdit clearEditor
+                             & appSelected            .~ SelectedList
+                next st' postsHandler
+
+    step st KTab = do
+        let st' = st & appSelected .~ SelectedList
+        next st' postsHandler
+    step st key = do
+        ed' <- handleEvent (Vty.EvKey key []) (st^.appEditor)
+        continue (st & appEditor .~ ed')
 
 postsHandler :: AppState -> Handler AppState Event
 postsHandler = handler step
   where
     step :: AppState -> Event -> EventM (Next AppState Event)
-    step st ev
-        | ev `isKey` Vty.KEsc = halt
-        | ev `isKey` Vty.KEnter = do
-            case st ^. appPosts . to listSelectedElement of
-                Just (_, post) -> do
-                    result <- liftIO (runRedditAnon (getPostComments (Post.postID post)))
-                    case result of
-                        Left err ->
-                            let error_st = st & appError .~ Just (show err)
-                                next_st  = st & appError .~ Nothing
-                            in next error_st (errorDialogHandler next_st postsHandler)
-                        Right (Comment.PostComments _ comment_references) ->
-                            let comments = V.fromList [ comment | Comment.Actual comment <- comment_references ]
-                                st' = st & appBreadcrumbs._Just._2   .~ Just post
-                                         & appComments.listElementsL .~ comments
-                                         & appComments.listSelectedL .~ (if V.null comments then Nothing else Just 0)
-                                         & appViewing                .~ ViewingComments
-                            in next st' commentsHandler
-                Nothing -> continue st
-        | ev `isKey` Vty.KChar '/' || ev `isKey` Vty.KChar '\t' = do
-            let st' = st & appEditor   %~ applyEdit (Z.insertChar '/' . clearEditor)
-                         & appSelected .~ SelectedEditor
-            next st' editorHandler
-        | otherwise = do
-            ps' <- handleEvent ev (st^.appPosts)
-            continue (st & appPosts .~ ps')
+    step _ KEsc = halt
+    step st KEnter = do
+        case st ^. appPosts . to listSelectedElement of
+            Just (_, post) -> do
+                result <- liftIO (runRedditAnon (getPostComments (Post.postID post)))
+                case result of
+                    Left err ->
+                        let error_st = st & appError .~ Just (show err)
+                            next_st  = st & appError .~ Nothing
+                        in next error_st (errorDialogHandler next_st postsHandler)
+                    Right (Comment.PostComments _ comment_references) ->
+                        let comments = V.fromList [ comment | Comment.Actual comment <- comment_references ]
+                            st' = st & appBreadcrumbs._Just._2   .~ Just post
+                                     & appComments.listElementsL .~ comments
+                                     & appComments.listSelectedL .~ (if V.null comments then Nothing else Just 0)
+                                     & appViewing                .~ ViewingComments
+                        in next st' commentsHandler
+            Nothing -> continue st
+    step st KTab = do
+        let st' = st & appEditor   %~ applyEdit clearEditor
+                     & appSelected .~ SelectedEditor
+        next st' editorHandler
+    step st key | key == KUp || key == KChar 'k' =
+        continue (st & appPosts %~ listMoveUp)
+    step st key | key == KDown || key == KChar 'j' =
+        continue (st & appPosts %~ listMoveDown)
+    step st _ = continue st
 
 commentsHandler :: AppState -> Handler AppState Event
 commentsHandler = handler step
   where
     step :: AppState -> Event -> EventM (Next AppState Event)
-    step st evt
-        | evt `isKey` Vty.KEsc = do
-            let st' = st & appBreadcrumbs._Just._2 .~ Nothing
-                         & appViewing              .~ ViewingPosts
-            next st' postsHandler
-        | otherwise = do
-            cs' <- handleEvent evt (st^.appComments)
-            continue (st & appComments .~ cs')
+    step st KEsc = do
+        let st' = st & appBreadcrumbs._Just._2 .~ Nothing
+                     & appViewing              .~ ViewingPosts
+        next st' postsHandler
+    step st key = do
+        cs' <- handleEvent (Vty.EvKey key []) (st^.appComments)
+        continue (st & appComments .~ cs')
 
 errorDialogHandler
     :: AppState
@@ -244,13 +254,13 @@ errorDialogHandler state1 k state0 =
     --> k state1                           -- Move on
   where
     go :: Interval EventM Event (Maybe AppState)
-    go = arr (\ev -> if ev `isKey` Vty.KEnter then Nothing else Just (Just state0))
+    go = arr (\case
+                  KEnter -> Nothing
+                  _      -> Just (Just state0))
 
 --------------------------------------------------------------------------------
 
 clearEditor :: Z.TextZipper String -> Z.TextZipper String
 clearEditor = Z.killToEOL . Z.gotoBOL
 
-isKey :: Vty.Event -> Vty.Key -> Bool
-isKey (Vty.EvKey k _) k' = k == k'
-isKey _ _ = False
+pattern KTab = KChar '\t'
