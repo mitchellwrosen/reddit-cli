@@ -1,0 +1,7 @@
+- patterns:
+  - ^.*\.hs$
+  - ^reddit-cli\.cabal$
+  - ^stack\.yaml$
+  commands:
+  - stack build
+  - stack exec reddit-cli
