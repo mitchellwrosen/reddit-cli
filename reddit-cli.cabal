@@ -14,9 +14,11 @@ library
   hs-source-dirs:      src
   exposed-modules:     Brick.Auto
                      , Brick.Widgets.Tree
+  other-modules:       Data.List.Zipper
   build-depends:       base >= 4.7 && < 5
                      , auto
                      , brick
+                     , containers
                      , lens
                      , semigroups
                      , transformers
