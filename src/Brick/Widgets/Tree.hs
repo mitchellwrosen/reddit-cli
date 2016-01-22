@@ -8,10 +8,11 @@ module Brick.Widgets.Tree
     , forestName
     , forestTrees
     , forestSelected
+    , forest
     , Tree(..)
     , treeElem
     , treeChildren
-    , forest
+    , tree
     , renderForest
     , forestCollapse
     , forestMoveDown
@@ -38,11 +39,14 @@ type IsCollapsed = Bool
 -- | A single tree of a forest, which has 0 or more children trees and may be
 -- collapsed.
 data Tree a = Tree
-    { _treeElem      :: a
-    , _treeChildren  :: [Tree a]
-    , _treeCollapsed :: Bool
+    { _treeElem        :: a
+    , _treeChildren    :: [Tree a]
+    , _treeCollapsed   :: !Bool
     }
 makeLenses ''Tree
+
+tree :: a -> [Tree a] -> Tree a
+tree x xs = Tree x xs False
 
 -- | A forest of trees with a single selected tree if non-empty.
 data Forest a = Forest
@@ -132,12 +136,19 @@ renderForest draw (Forest name ts selected) = Widget Greedy Greedy $ do
 forestCollapse :: forall a. Forest a -> Forest a
 forestCollapse (Forest name trees Nothing) = Forest name trees Nothing
 forestCollapse (Forest name trees (Just z)) =
+    -- So we recreate the index zipper every time a comment is collapsed...
+    -- perhaps some re-thinking of the type is in order. But, at least moving
+    -- up and down is fast.
     let selected :: Traversal' [Tree a] (Tree a)
         selected = treeIndex (toList (zpeek z))
 
         trees' :: [Tree a]
         trees' = over (selected . treeCollapsed) not trees
-    in forest name trees'
+    in applyN (zllen z) forestMoveDown (forest name trees')
+  where
+    applyN :: forall a. Int -> (a -> a) -> a -> a
+    applyN 0 _ x = x
+    applyN n f x = applyN (n-1) f (f $! x)
 
 -- | Move down one node, depth-first.
 forestMoveDown :: Forest a -> Forest a

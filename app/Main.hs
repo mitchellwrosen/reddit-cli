@@ -111,12 +111,19 @@ main = void (defaultMain redditApp initialState)
                     else mempty
 
         drawComment :: IsSelected -> IsCollapsed -> Comment -> Widget
-        drawComment is_selected is_collapsed c =
-            str (printf "%4d  " (fromMaybe 0 (Comment.score c))) <+>
-            (markup (unUsername (Comment.author c) @@ comment_markup)
-             <=>
-             markup (Comment.body c @@ comment_markup))
+        drawComment is_selected is_collapsed c = comment_widget
           where
+            comment_widget :: Widget
+            comment_widget
+                | is_collapsed =
+                    str (printf "%4d  " (fromMaybe 0 (Comment.score c))) <+>
+                    (markup (("+ " <> unUsername (Comment.author c)) @@ comment_markup))
+                | otherwise =
+                    str (printf "%4d  " (fromMaybe 0 (Comment.score c))) <+>
+                    (markup (("- " <> unUsername (Comment.author c)) @@ comment_markup)
+                     <=>
+                     markup (Comment.body c @@ comment_markup))
+
             comment_markup =
                 if is_selected && _appSelected == NotSelectedEditor
                     then Vty.black `on` Vty.white
@@ -225,7 +232,7 @@ postsHandler = handler step
                     Right (Comment.PostComments _ comment_references) ->
                         let comments :: Forest Comment
                             comments = forest "comments"
-                                           [ Tree comment [] False
+                                           [ tree comment []
                                            | Comment.Actual comment <- comment_references
                                            ]
                             st' = st & appBreadcrumbs._Just._2   .~ Just post
@@ -255,6 +262,8 @@ commentsHandler = handler step
         let st' = st & appEditor   %~ applyEdit clearEditor
                      & appSelected .~ SelectedEditor
         next st' editorHandler
+    step st KEnter =
+        continue (st & appComments %~ forestCollapse)
     step st key | key == KUp || key == KChar 'k' =
         continue (st & appComments %~ forestMoveUp)
     step st key | key == KDown || key == KChar 'j' =
