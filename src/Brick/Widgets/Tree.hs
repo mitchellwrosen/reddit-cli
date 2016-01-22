@@ -119,15 +119,23 @@ renderForest draw (Forest name ts selected) = Widget Greedy Greedy $ do
   where
     treeWidget :: Maybe (Seq Int) -> Tree a -> Widget
     treeWidget idx (Tree x xs collapsed) =
-        let w0 = draw (isSelected idx) collapsed x
+        let selected :: Bool
+            selected = idx == Just (Seq.singleton 0)
+
+            makeVisible :: Widget -> Widget
+            makeVisible
+                | selected  = visible
+                | otherwise = id
+
+            w0 :: Widget
+            w0 = makeVisible (draw selected collapsed x)
+
+            w1 :: Widget
             w1 = treesWidget (idxDown idx) xs
+
         in if collapsed
                then w0
                else w0 <=> padLeft (Pad 2) w1
-      where
-        isSelected :: Maybe (Seq Int) -> Bool
-        isSelected (Just s) | s == Seq.singleton 0 = True
-        isSelected _ = False
 
     treesWidget :: Maybe (Seq Int) -> [Tree a] -> Widget
     treesWidget idx trees = vBox (map (uncurry treeWidget) (zip (iterate idxRight idx) trees))

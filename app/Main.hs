@@ -48,7 +48,7 @@ data Selected
     deriving Eq
 
 data AppState = AppState
-    { _appBreadcrumbs :: Maybe (Text, Maybe Post) -- The subreddit/post breadcrumgs
+    { _appBreadcrumbs :: Maybe (Text, Maybe Post) -- The subreddit/post breadcrumbs
     , _appPosts       :: List Post                -- List of loaded posts
     , _appComments    :: Forest Comment           -- Forest of loaded comments
     , _appEditor      :: Editor                   -- Editor at the bottom for choosing a subreddit
@@ -85,7 +85,7 @@ main = void (defaultMain redditApp initialState)
                             case mpost of
                                 Just post -> txt ("/r/" <> subreddit <> " - " <> Post.title post)
                                 Nothing   -> txt ("/r/" <> subreddit)
-                        Nothing -> txt ("Enter e.g. \"/haskell\" below"))
+                        Nothing -> txt ("Enter e.g. \"haskell\" below"))
                 <=>
                 case _appViewing of
                     ViewingPosts    -> renderList _appPosts drawPost
