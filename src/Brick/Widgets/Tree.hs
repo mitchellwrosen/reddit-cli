@@ -1,3 +1,4 @@
+{-# LANGUAGE LambdaCase          #-}
 {-# LANGUAGE RankNTypes          #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TemplateHaskell     #-}
@@ -10,22 +11,25 @@ module Brick.Widgets.Tree
     , Tree(..)
     , treeElem
     , treeChildren
-    -- , nodeCollapsed
     , forest
-    -- , renderTree
-    -- , treeCollapse
+    , renderForest
+    , forestCollapse
+    , forestMoveDown
+    , forestMoveUp
+    , IsSelected
+    , IsCollapsed
     ) where
 
 import Data.List.Zipper
 
+import Control.Arrow      ((>>>))
+import Control.Monad
 import Brick.Types
 import Brick.Widgets.Core
-import Control.Lens hiding ((|>))
-import Data.List.NonEmpty (NonEmpty(..))
-import Data.Sequence      (Seq, (|>))
+import Control.Lens       hiding ((|>))
+import Data.Sequence      (Seq, ViewL(..), (|>))
 import GHC.Exts
 
-import qualified Data.List.NonEmpty as NonEmpty
 import qualified Data.Sequence      as Seq
 
 type IsSelected = Bool
@@ -44,6 +48,7 @@ makeLenses ''Tree
 data Forest a = Forest
     { _forestName     :: Name
     , _forestTrees    :: [Tree a]
+    -- Invariant: Sequences are non-empty.
     , _forestSelected :: Maybe (Z (Seq Int))
     }
 makeLenses ''Forest
@@ -104,29 +109,24 @@ dfForest is ns = concatMap go (zip [0..] ns)
 
 -- | Render a forest, given an element rendering function. Children of collapsed
 -- elements will not be rendered.
--- renderTree :: Tree a -> (NodeSelected -> NodeCollapsed -> a -> Widget) -> Widget
--- renderTree (Tree name nodes sel) draw = renderNodes nodes sel draw
---
--- renderNodes
---     :: [Node a]
---     -> [Int]
---     -> (NodeSelected -> NodeCollapsed -> a -> Widget)
---     -> Widget
--- renderNodes ns idx draw =
---     vBox (map (\(n,i) -> renderNode n i draw) (zip ns (iterate idxRight idx)))
---
--- renderNode
---     :: Node a
---     -> [Int]
---     -> (NodeSelected -> NodeCollapsed -> a -> Widget)
---     -> Widget
--- renderNode (Node x xs collapsed) idx draw =
---     let w0 = draw (idx == [0]) collapsed x
---         w1 = renderNodes xs (idxDown idx) draw
---     in if collapsed
---            then w0
---            else w0 <=> padLeft (Pad 1) w1
+renderForest :: forall a. (IsSelected -> IsCollapsed -> a -> Widget) -> Forest a -> Widget
+renderForest draw (Forest name ts selected) = Widget Greedy Greedy $ do
+    render (viewport name Vertical (treesWidget (fmap zpeek selected) ts))
+  where
+    treeWidget :: Maybe (Seq Int) -> Tree a -> Widget
+    treeWidget idx (Tree x xs collapsed) =
+        let w0 = draw (isSelected idx) collapsed x
+            w1 = treesWidget (idxDown idx) xs
+        in if collapsed
+               then w0
+               else w0 <=> padLeft (Pad 2) w1
+      where
+        isSelected :: Maybe (Seq Int) -> Bool
+        isSelected (Just s) | s == Seq.singleton 0 = True
+        isSelected _ = False
 
+    treesWidget :: Maybe (Seq Int) -> [Tree a] -> Widget
+    treesWidget idx trees = vBox (map (uncurry treeWidget) (zip (iterate idxRight idx) trees))
 
 -- | Collapse (or uncollapse) the selected 'Tree' of a 'Forest'.
 forestCollapse :: forall a. Forest a -> Forest a
@@ -139,35 +139,33 @@ forestCollapse (Forest name trees (Just z)) =
         trees' = over (selected . treeCollapsed) not trees
     in forest name trees'
 
--- forestCollapse :: Forest a -> Forest a
--- forestCollapse f = t & treeNodes %~ nodesCollapse (t^.treeSelected)
+-- | Move down one node, depth-first.
+forestMoveDown :: Forest a -> Forest a
+forestMoveDown = over (forestSelected . _Just) zdown
 
--- nodesCollapse :: [Int] -> [Node a] -> [Node a]
--- nodesCollapse ns = over (nodeIndex ns . nodeCollapsed) not
-
--- | Move "down" one node. This will move to this node's first child, or if it
--- has no children, its
--- treeMoveDown :: Tree a -> Tree a
--- treeMoveDown (Tree name xs is) = Tree name xs (nodesMoveDown xs is)
---
--- nodesMoveDown :: [Node a] -> [Int] -> [Int]
--- nodesMoveDown _  [] = []
--- nodesMoveDown xs [i] = [clamp 0 (length xs - 1) (i + 1)]
--- nodesMoveDown xs (i:is) = (xs !! i)^.nodeChildren
+-- | Move up one node, depth-first.
+forestMoveUp :: Forest a -> Forest a
+forestMoveUp = over (forestSelected . _Just) zup
 
 --------------------------------------------------------------------------------
-
--- clamp :: Int -> Int -> Int -> Int
--- clamp i j n = max i (min j n)
 
 -- Invariant: list of ints is not empty
 treeIndex :: [Int] -> Traversal' [Tree a] (Tree a)
 treeIndex [n] = ix n
 treeIndex (n:ns) = ix n . treeChildren . treeIndex ns
 
--- idxDown :: [Int] -> [Int]
--- idxDown []     = []
--- idxDown (_:xs) = xs
---
--- idxRight :: [Int] -> [Int]
--- idxRight = over (ix 0) (subtract 1)
+idxDown :: Maybe (Seq Int) -> Maybe (Seq Int)
+idxDown = join . fmap safeTail
+  where
+    safeTail :: Seq Int -> Maybe (Seq Int)
+    safeTail = Seq.viewl >>> \case
+        EmptyL  -> Nothing
+        _ :< xs -> Just xs
+
+idxRight :: Maybe (Seq Int) -> Maybe (Seq Int)
+idxRight = over (_Just . seqHead) (subtract 1)
+  where
+    seqHead :: Setter' (Seq a) a
+    seqHead = sets (\f -> Seq.viewl >>> \case
+                              EmptyL  -> mempty
+                              x :< xs -> f x <| xs)

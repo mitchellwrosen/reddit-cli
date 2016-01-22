@@ -7,6 +7,7 @@
 module Main where
 
 import Brick.Auto
+import Brick.Widgets.Tree
 
 import Brick.Markup
 import Brick.Widgets.Dialog
@@ -33,6 +34,7 @@ import qualified Data.Vector          as V
 import qualified Graphics.Vty         as Vty
 import qualified Reddit.Types.Comment as Comment
 import qualified Reddit.Types.Post    as Post
+import qualified Reddit.Types.User    as User
 
 type Event = Key
 
@@ -41,14 +43,14 @@ data Viewing
     | ViewingComments -- Viewing post comments
 
 data Selected
-    = SelectedEditor -- Selected editor
-    | SelectedList   -- Selected post/comments list
+    = SelectedEditor    -- Selected editor
+    | NotSelectedEditor -- Selected post list or comments forest
     deriving Eq
 
 data AppState = AppState
     { _appBreadcrumbs :: Maybe (Text, Maybe Post) -- The subreddit/post breadcrumgs
     , _appPosts       :: List Post                -- List of loaded posts
-    , _appComments    :: List Comment             -- List of loaded comments
+    , _appComments    :: Forest Comment           -- Forest of loaded comments
     , _appEditor      :: Editor                   -- Editor at the bottom for choosing a subreddit
     , _appError       :: Maybe String             -- The error to be displayed
     , _appViewing     :: Viewing                  -- Viewing posts list or comments list?
@@ -60,7 +62,7 @@ initialState :: AppState
 initialState = AppState
     { _appBreadcrumbs = Nothing
     , _appPosts       = list "posts" V.empty 1
-    , _appComments    = list "comments" V.empty 1
+    , _appComments    = forest "comments" []
     , _appEditor      = editor "editor" (str . concat) (Just 1) ""
     , _appError       = Nothing
     , _appViewing     = ViewingPosts
@@ -86,12 +88,12 @@ main = void (defaultMain redditApp initialState)
                         Nothing -> txt ("Enter e.g. \"/haskell\" below"))
                 <=>
                 case _appViewing of
-                    ViewingPosts    -> renderList _appPosts    drawPost
-                    ViewingComments -> renderList _appComments drawComment
+                    ViewingPosts    -> renderList _appPosts drawPost
+                    ViewingComments -> renderForest drawComment _appComments
                 <=>
                 case _appSelected of
-                    SelectedEditor -> txt "/r/" <+> renderEditor _appEditor
-                    SelectedList   -> emptyWidget
+                    SelectedEditor    -> txt "/r/" <+> renderEditor _appEditor
+                    NotSelectedEditor -> emptyWidget
                 <=>
                 footer
         in case _appError of
@@ -104,17 +106,24 @@ main = void (defaultMain redditApp initialState)
             markup (Post.title post @@ title_markup)
           where
             title_markup =
-                if is_selected && _appSelected == SelectedList
+                if is_selected && _appSelected == NotSelectedEditor
                     then Vty.black `on` Vty.white
                     else mempty
 
-        drawComment :: Bool -> Comment -> Widget
-        drawComment is_selected c = markup (Comment.body c @@ comment_markup)
+        drawComment :: IsSelected -> IsCollapsed -> Comment -> Widget
+        drawComment is_selected is_collapsed c =
+            str (printf "%4d  " (fromMaybe 0 (Comment.score c))) <+>
+            (markup (unUsername (Comment.author c) @@ comment_markup)
+             <=>
+             markup (Comment.body c @@ comment_markup))
           where
             comment_markup =
-                if is_selected && _appSelected == SelectedList
-                    then fg Vty.magenta
+                if is_selected && _appSelected == NotSelectedEditor
+                    then Vty.black `on` Vty.white
                     else mempty
+
+            unUsername :: User.Username -> Text
+            unUsername (Username x) = x
 
         footer :: Widget
         footer = mkFooter $
@@ -127,16 +136,16 @@ main = void (defaultMain redditApp initialState)
                     [legend "esc" "back", legend "abc" "subreddit"]
                 (SelectedEditor, ViewingComments, _) ->
                     [legend "esc" "back", legend "abc" "subreddit", legend "tab" "comments"]
-                (SelectedList, ViewingPosts, 0) ->
+                (NotSelectedEditor, ViewingPosts, 0) ->
                     [legend "esc" "quit", legend "tab" "subreddit", legend "r" "refresh"]
-                (SelectedList, ViewingPosts, _) ->
+                (NotSelectedEditor, ViewingPosts, _) ->
                     [legend "esc" "quit", legend "tab" "subreddit", legend "r" "refresh", legend "enter" "comments"]
-                (SelectedList, ViewingComments, _) ->
-                    [legend "esc h ⇦ " "back", legend "tab" "subreddit", legend "r" "refresh"]
+                (NotSelectedEditor, ViewingComments, _) ->
+                    [legend "esc" "back", legend "tab" "subreddit", legend "r" "refresh"]
           where
             n = case _appViewing of
                     ViewingPosts    -> _appPosts^.listElementsL.to V.length
-                    ViewingComments -> _appComments^.listElementsL.to V.length
+                    ViewingComments -> _appComments^.forestTrees.to length
 
             legend :: Text -> Text -> Widget
             legend x y = colored Vty.cyan x <+> txt (" " <> y)
@@ -154,8 +163,8 @@ main = void (defaultMain redditApp initialState)
     chooseCursor _ [] = Nothing
     chooseCursor s (c:_) =
         case s^.appSelected of
-            SelectedEditor -> Just c
-            SelectedList   -> Nothing
+            SelectedEditor    -> Just c
+            NotSelectedEditor -> Nothing
 
     eventToKey :: Vty.Event -> Maybe Key
     eventToKey (Vty.EvKey key _) = Just key
@@ -189,11 +198,11 @@ editorHandler = handler step
                              & appPosts.listElementsL .~ posts
                              & appPosts.listSelectedL .~ (if V.null posts then Nothing else Just 0)
                              & appEditor              %~ applyEdit clearEditor
-                             & appSelected            .~ SelectedList
+                             & appSelected            .~ NotSelectedEditor
                 next st' postsHandler
 
     step st KTab = do
-        let st' = st & appSelected .~ SelectedList
+        let st' = st & appSelected .~ NotSelectedEditor
         next st' postsHandler
     step st key = do
         ed' <- handleEvent (Vty.EvKey key []) (st^.appEditor)
@@ -214,10 +223,13 @@ postsHandler = handler step
                             next_st  = st & appError .~ Nothing
                         in next error_st (errorDialogHandler next_st postsHandler)
                     Right (Comment.PostComments _ comment_references) ->
-                        let comments = V.fromList [ comment | Comment.Actual comment <- comment_references ]
+                        let comments :: Forest Comment
+                            comments = forest "comments"
+                                           [ Tree comment [] False
+                                           | Comment.Actual comment <- comment_references
+                                           ]
                             st' = st & appBreadcrumbs._Just._2   .~ Just post
-                                     & appComments.listElementsL .~ comments
-                                     & appComments.listSelectedL .~ (if V.null comments then Nothing else Just 0)
+                                     & appComments               .~ comments
                                      & appViewing                .~ ViewingComments
                         in next st' commentsHandler
             Nothing -> continue st
@@ -239,9 +251,15 @@ commentsHandler = handler step
         let st' = st & appBreadcrumbs._Just._2 .~ Nothing
                      & appViewing              .~ ViewingPosts
         next st' postsHandler
-    step st key = do
-        cs' <- handleEvent (Vty.EvKey key []) (st^.appComments)
-        continue (st & appComments .~ cs')
+    step st KTab = do
+        let st' = st & appEditor   %~ applyEdit clearEditor
+                     & appSelected .~ SelectedEditor
+        next st' editorHandler
+    step st key | key == KUp || key == KChar 'k' =
+        continue (st & appComments %~ forestMoveUp)
+    step st key | key == KDown || key == KChar 'j' =
+        continue (st & appComments %~ forestMoveDown)
+    step st _ = continue st
 
 errorDialogHandler
     :: AppState
