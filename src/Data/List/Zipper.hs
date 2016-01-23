@@ -1,6 +1,7 @@
 module Data.List.Zipper where
 
 data Z a = Z [a] a [a]
+  deriving Show
 
 zipper :: [a] -> Maybe (Z a)
 zipper [] = Nothing

@@ -136,19 +136,21 @@ main = void (defaultMain redditApp initialState)
         footer = mkFooter $
             case (_appSelected, _appViewing, n) of
                 (SelectedEditor, ViewingPosts, 0) ->
-                    [legend "esc" "quit", legend "abc" "subreddit"]
+                    [legend "esc" "quit"]
                 (SelectedEditor, ViewingPosts, _) ->
-                    [legend "esc" "quit", legend "abc" "subreddit", legend "tab" "posts"]
+                    [legend "esc" "quit", legend "tab" "posts"]
                 (SelectedEditor, ViewingComments, 0) ->
-                    [legend "esc" "back", legend "abc" "subreddit"]
+                    [legend "esc" "back"]
                 (SelectedEditor, ViewingComments, _) ->
-                    [legend "esc" "back", legend "abc" "subreddit", legend "tab" "comments"]
+                    [legend "esc" "back", legend "tab" "comments"]
                 (NotSelectedEditor, ViewingPosts, 0) ->
                     [legend "esc" "quit", legend "tab" "subreddit", legend "r" "refresh"]
                 (NotSelectedEditor, ViewingPosts, _) ->
-                    [legend "esc" "quit", legend "tab" "subreddit", legend "r" "refresh", legend "enter" "comments"]
-                (NotSelectedEditor, ViewingComments, _) ->
+                    [legend "esc" "quit", legend "tab" "subreddit", legend "enter" "comments", legend "r" "refresh"]
+                (NotSelectedEditor, ViewingComments, 0) ->
                     [legend "esc" "back", legend "tab" "subreddit", legend "r" "refresh"]
+                (NotSelectedEditor, ViewingComments, _) ->
+                    [legend "esc" "back", legend "tab" "subreddit", legend "enter" "collapse", legend "r" "refresh"]
           where
             n = case _appViewing of
                     ViewingPosts    -> _appPosts^.listElementsL.to V.length
@@ -210,7 +212,9 @@ editorHandler = handler step
 
     step st KTab = do
         let st' = st & appSelected .~ NotSelectedEditor
-        next st' postsHandler
+        case st^.appViewing of
+            ViewingPosts    -> next st' postsHandler
+            ViewingComments -> next st' commentsHandler
     step st key = do
         ed' <- handleEvent (Vty.EvKey key []) (st^.appEditor)
         continue (st & appEditor .~ ed')
@@ -220,7 +224,7 @@ postsHandler = handler step
   where
     step :: AppState -> Event -> EventM (Next AppState Event)
     step _ KEsc = halt
-    step st KEnter = do
+    step st key | key == KEnter || key == KChar 'l' = do
         case st ^. appPosts . to listSelectedElement of
             Just (_, post) -> do
                 result <- liftIO (runRedditAnon (getPostComments (Post.postID post)))
@@ -230,17 +234,12 @@ postsHandler = handler step
                             next_st  = st & appError .~ Nothing
                         in next error_st (errorDialogHandler next_st postsHandler)
                     Right (Comment.PostComments _ comment_references) ->
-                        let comments :: Forest Comment
-                            comments = forest "comments"
-                                           [ tree comment []
-                                           | Comment.Actual comment <- comment_references
-                                           ]
-                            st' = st & appBreadcrumbs._Just._2   .~ Just post
-                                     & appComments               .~ comments
+                        let st' = st & appBreadcrumbs._Just._2   .~ Just post
+                                     & appComments               .~ commentsToForest comment_references
                                      & appViewing                .~ ViewingComments
                         in next st' commentsHandler
             Nothing -> continue st
-    step st KTab = do
+    step st key | key == KTab || key == KChar '/' = do
         let st' = st & appEditor   %~ applyEdit clearEditor
                      & appSelected .~ SelectedEditor
         next st' editorHandler
@@ -254,11 +253,11 @@ commentsHandler :: AppState -> Handler AppState Event
 commentsHandler = handler step
   where
     step :: AppState -> Event -> EventM (Next AppState Event)
-    step st KEsc = do
+    step st key | key == KEsc || key == KChar 'h' = do
         let st' = st & appBreadcrumbs._Just._2 .~ Nothing
                      & appViewing              .~ ViewingPosts
         next st' postsHandler
-    step st KTab = do
+    step st key | key == KTab || key == KChar '/' = do
         let st' = st & appEditor   %~ applyEdit clearEditor
                      & appSelected .~ SelectedEditor
         next st' editorHandler
@@ -286,6 +285,16 @@ errorDialogHandler state1 k state0 =
                   _      -> Just (Just state0))
 
 --------------------------------------------------------------------------------
+
+commentsToForest :: [Comment.CommentReference] -> Forest Comment
+commentsToForest = forest "comments" . catMaybes . map commentToTree
+
+commentsToTrees :: [Comment.CommentReference] -> [Tree Comment]
+commentsToTrees = catMaybes . map commentToTree
+
+commentToTree :: Comment.CommentReference -> Maybe (Tree Comment)
+commentToTree (Comment.Actual c) = Just (tree c (commentsToTrees (contents (Comment.replies c))))
+commentToTree _ = Nothing
 
 clearEditor :: Z.TextZipper String -> Z.TextZipper String
 clearEditor = Z.killToEOL . Z.gotoBOL
