@@ -8,6 +8,7 @@ module Main where
 
 import Brick.Auto
 import Brick.Widgets.Tree
+import Brick.Widgets.WrappedString
 
 import Brick.Markup
 import Brick.Widgets.Dialog
@@ -122,8 +123,9 @@ main = void (defaultMain redditApp initialState)
                     str (printf "%4d  " (fromMaybe 0 (Comment.score c))) <+>
                     (markup (("- " <> unUsername (Comment.author c)) @@ comment_markup)
                      <=>
-                     markup (Comment.body c @@ comment_markup))
+                     padRight (Pad 4) (wrappedTxt (Comment.body c) comment_markup))
 
+            comment_markup :: Vty.Attr
             comment_markup =
                 if is_selected && _appSelected == NotSelectedEditor
                     then Vty.black `on` Vty.white

@@ -1,10 +1,16 @@
 resolver: lts-3.14
+packages:
+- .
+- location:
+    git: git@github.com:jtdaugherty/brick.git
+    commit: a47f924d6fd2c731e90aa6eb203258b5ffb8b589
 extra-deps:
 - aeson-0.9.0.1
 - api-builder-0.11.0.0
 - attoparsec-0.13.0.1
 - brick-0.2.3
 - http-client-0.4.20
+- para-1.1
 - reddit-0.2.0.0
 - text-zipper-0.3.1
 - vty-5.4.0
