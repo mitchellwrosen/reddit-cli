@@ -3,20 +3,20 @@ module Brick.Widgets.WrappedString
     , wrappedTxt
     ) where
 
+import Data.Text.Paragraph
+
 import Brick.Markup
 import Brick.Types
 import Brick.Widgets.Core
 import Data.List
-import Data.Text               (Text, pack, unpack)
+import Data.Text               (Text, pack)
 import Data.Text.Markup
 import Graphics.Vty.Attributes (Attr)
-import Text.Format.Para
 
 wrappedStr :: String -> Attr -> Widget
-wrappedStr s attr = Widget Fixed Fixed $ do
-    c <- getContext
-    let s' = intercalate "\n" (formatParas (availWidth c) Nothing (lines s))
-    render (markup (pack s' @@ attr))
+wrappedStr s = wrappedTxt (pack s)
 
 wrappedTxt :: Text -> Attr -> Widget
-wrappedTxt t = wrappedStr (unpack t)
+wrappedTxt t attr = Widget Fixed Fixed $ do
+    c <- getContext
+    render (markup (justifyLeft (availWidth c) t @@ attr))

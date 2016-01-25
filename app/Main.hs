@@ -18,6 +18,7 @@ import Control.Auto           hiding ((<+>))
 import Control.Monad
 import Control.Monad.IO.Class
 import Control.Lens
+import Data.Bits
 import Data.Default           (def)
 import Data.List              (intersperse)
 import Data.Maybe
@@ -116,14 +117,16 @@ main = void (defaultMain redditApp initialState)
           where
             comment_widget :: Widget
             comment_widget
-                | is_collapsed =
-                    str (printf "%4d  " (fromMaybe 0 (Comment.score c))) <+>
-                    (markup (("+ " <> unUsername (Comment.author c)) @@ comment_markup))
+                | is_collapsed = header
                 | otherwise =
-                    str (printf "%4d  " (fromMaybe 0 (Comment.score c))) <+>
-                    (markup (("- " <> unUsername (Comment.author c)) @@ comment_markup)
-                     <=>
-                     padRight (Pad 4) (wrappedTxt (Comment.body c) comment_markup))
+                    header
+                    <=>
+                    padRight (Pad 4) (wrappedTxt (Comment.body c) comment_markup)
+
+            header :: Widget
+            header = markup (
+                (unUsername (Comment.author c) <> " · " <> maybe "?" tshow (Comment.score c))
+                @@ Vty.withStyle mempty Vty.bold)
 
             comment_markup :: Vty.Attr
             comment_markup =
@@ -302,3 +305,6 @@ clearEditor :: Z.TextZipper String -> Z.TextZipper String
 clearEditor = Z.killToEOL . Z.gotoBOL
 
 pattern KTab = KChar '\t'
+
+tshow :: Show a => a -> Text
+tshow = T.pack . show
