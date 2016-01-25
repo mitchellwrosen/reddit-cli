@@ -1,10 +1,11 @@
-{-# LANGUAGE LambdaCase                 #-}
-{-# LANGUAGE RecordWildCards            #-}
-{-# LANGUAGE OverloadedStrings          #-}
-{-# LANGUAGE PatternSynonyms            #-}
-{-# LANGUAGE TemplateHaskell            #-}
+{-# LANGUAGE LambdaCase        #-}
+{-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE PatternSynonyms   #-}
 
 module Main where
+
+import Model
+import View
 
 import Brick.Auto
 import Brick.Widgets.Tree
@@ -38,140 +39,14 @@ import qualified Reddit.Types.Comment as Comment
 import qualified Reddit.Types.Post    as Post
 import qualified Reddit.Types.User    as User
 
+-- An event is a key press - we don't use mouse events or resize events.
 type Event = Key
-
-data Viewing
-    = ViewingPosts    -- Viewing subreddit posts
-    | ViewingComments -- Viewing post comments
-
-data Selected
-    = SelectedEditor    -- Selected editor
-    | NotSelectedEditor -- Selected post list or comments forest
-    deriving Eq
-
-data AppState = AppState
-    { _appBreadcrumbs :: Maybe (Text, Maybe Post) -- The subreddit/post breadcrumbs
-    , _appPosts       :: List Post                -- List of loaded posts
-    , _appComments    :: Forest Comment           -- Forest of loaded comments
-    , _appEditor      :: Editor                   -- Editor at the bottom for choosing a subreddit
-    , _appError       :: Maybe String             -- The error to be displayed
-    , _appViewing     :: Viewing                  -- Viewing posts list or comments list?
-    , _appSelected    :: Selected                 -- Selected the editor or the posts/comments list?
-    }
-makeLenses ''AppState
-
-initialState :: AppState
-initialState = AppState
-    { _appBreadcrumbs = Nothing
-    , _appPosts       = list "posts" V.empty 1
-    , _appComments    = forest "comments" []
-    , _appEditor      = editor "editor" (str . concat) (Just 1) ""
-    , _appError       = Nothing
-    , _appViewing     = ViewingPosts
-    , _appSelected    = SelectedEditor
-    }
 
 main :: IO ()
 main = void (defaultMain redditApp initialState)
   where
     redditApp :: App AppState Event
-    redditApp = App draw chooseCursor editorHandler pure (const def) eventToKey
-
-    draw :: AppState -> [Widget]
-    draw AppState{..} =
-        let widget :: Widget
-            widget =
-                padBottom (Pad 1) (
-                    case _appBreadcrumbs of
-                        Just (subreddit, mpost) ->
-                            case mpost of
-                                Just post -> txt ("/r/" <> subreddit <> " - " <> Post.title post)
-                                Nothing   -> txt ("/r/" <> subreddit)
-                        Nothing -> txt ("Enter e.g. \"haskell\" below"))
-                <=>
-                case _appViewing of
-                    ViewingPosts    -> renderList _appPosts drawPost
-                    ViewingComments -> renderForest drawComment _appComments
-                <=>
-                case _appSelected of
-                    SelectedEditor    -> txt "/r/" <+> renderEditor _appEditor
-                    NotSelectedEditor -> emptyWidget
-                <=>
-                footer
-        in case _appError of
-               Just err -> [renderDialog errorDialog (str err), widget]
-               Nothing  -> [widget]
-      where
-        drawPost :: Bool -> Post -> Widget
-        drawPost is_selected post =
-            str (printf "%4d  " (Post.score post)) <+>
-            markup (Post.title post @@ title_markup)
-          where
-            title_markup =
-                if is_selected && _appSelected == NotSelectedEditor
-                    then Vty.black `on` Vty.white
-                    else mempty
-
-        drawComment :: IsSelected -> IsCollapsed -> Comment -> Widget
-        drawComment is_selected is_collapsed c = comment_widget
-          where
-            comment_widget :: Widget
-            comment_widget
-                | is_collapsed = header
-                | otherwise =
-                    header
-                    <=>
-                    padRight (Pad 4) (wrappedTxt (Comment.body c) comment_markup)
-
-            header :: Widget
-            header = markup (
-                (unUsername (Comment.author c) <> " · " <> maybe "?" tshow (Comment.score c))
-                @@ Vty.withStyle mempty Vty.bold)
-
-            comment_markup :: Vty.Attr
-            comment_markup =
-                if is_selected && _appSelected == NotSelectedEditor
-                    then Vty.black `on` Vty.white
-                    else mempty
-
-            unUsername :: User.Username -> Text
-            unUsername (Username x) = x
-
-        footer :: Widget
-        footer = mkFooter $
-            case (_appSelected, _appViewing, n) of
-                (SelectedEditor, ViewingPosts, 0) ->
-                    [legend "esc" "quit"]
-                (SelectedEditor, ViewingPosts, _) ->
-                    [legend "esc" "quit", legend "tab" "posts"]
-                (SelectedEditor, ViewingComments, 0) ->
-                    [legend "esc" "back"]
-                (SelectedEditor, ViewingComments, _) ->
-                    [legend "esc" "back", legend "tab" "comments"]
-                (NotSelectedEditor, ViewingPosts, 0) ->
-                    [legend "esc" "quit", legend "tab" "subreddit", legend "r" "refresh"]
-                (NotSelectedEditor, ViewingPosts, _) ->
-                    [legend "esc" "quit", legend "tab" "subreddit", legend "enter" "comments", legend "r" "refresh"]
-                (NotSelectedEditor, ViewingComments, 0) ->
-                    [legend "esc" "back", legend "tab" "subreddit", legend "r" "refresh"]
-                (NotSelectedEditor, ViewingComments, _) ->
-                    [legend "esc" "back", legend "tab" "subreddit", legend "enter" "collapse", legend "r" "refresh"]
-          where
-            n = case _appViewing of
-                    ViewingPosts    -> _appPosts^.listElementsL.to V.length
-                    ViewingComments -> _appComments^.forestTrees.to length
-
-            legend :: Text -> Text -> Widget
-            legend x y = colored Vty.cyan x <+> txt (" " <> y)
-
-            mkFooter :: [Widget] -> Widget
-            mkFooter = hBox . intersperse (colored Vty.yellow " | ")
-
-        colored :: Vty.Color -> Text -> Widget
-        colored c t = markup (t @@ fg c)
-
-        errorDialog :: Dialog ()
-        errorDialog = dialog "error" (Just "Error") (Just (0, [("Ok", ())])) 80
+    redditApp = App drawApp chooseCursor editorHandler pure (const def) eventToKey
 
     chooseCursor :: AppState -> [CursorLocation] -> Maybe CursorLocation
     chooseCursor _ [] = Nothing
@@ -305,6 +180,3 @@ clearEditor :: Z.TextZipper String -> Z.TextZipper String
 clearEditor = Z.killToEOL . Z.gotoBOL
 
 pattern KTab = KChar '\t'
-
-tshow :: Show a => a -> Text
-tshow = T.pack . show
